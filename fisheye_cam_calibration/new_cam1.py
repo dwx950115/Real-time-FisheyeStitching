@@ -1,8 +1,8 @@
 
 import cv2
 import numpy as np
-camera_mat = np.array([[122.7938597429089, 0.0, 327.23470729912793], [0.0, 123.70781204711702, 245.88701007032986], [0.0, 0.0, 1.0]])
-dist_coeff = np.array([[0.041843092832358535], [0.006039819981015406], [0.013091410556075288], [-0.008650444406630757]])
+camera_mat = np.array([[306.2179554207244, 0.0, 827.6396074947415], [0.0, 306.4032729038873, 612.7686375589241], [0.0, 0.0, 1.0]])
+dist_coeff = np.array([[0.061469387879628086], [-0.018668965639305285], [0.03781464752574166], [-0.02677018297407956]])
 frame_shape = None
 def undistort(frame):
     global frame_shape
@@ -14,6 +14,8 @@ def undistort(frame):
     return undist_frame
 if __name__ == "__main__":
     cap = cv2.VideoCapture(0)
+    cap.set(3, 1600)
+    cap.set(4, 1200)
     if not cap.isOpened(): raise "camera open failed"
     ok, raw_frame = cap.read()
     if not ok: raise "image read failed"

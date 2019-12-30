@@ -4,11 +4,11 @@ from easydict import EasyDict
 from pdb import set_trace as b
 
 cfgs= EasyDict()
-cfgs.CAMERA_ID = 0
-cfgs.N_CHESS_BORAD_WIDTH = 5
-cfgs.N_CHESS_BORAD_HEIGHT = 7
+cfgs.CAMERA_ID = 1
+cfgs.N_CHESS_BORAD_WIDTH = 7
+cfgs.N_CHESS_BORAD_HEIGHT = 9
 cfgs.CHESS_BOARD_SIZE = lambda: (cfgs.N_CHESS_BORAD_WIDTH, cfgs.N_CHESS_BORAD_HEIGHT)
-cfgs.SQUARE_SIZE_MM = 58
+cfgs.SQUARE_SIZE_MM = 20
 cfgs.N_CALIBRATE_SIZE = 10
 cfgs.FIND_CHESSBOARD_DELAY_MOD = 4
 cfgs.FOCAL_SCALE = 1.0
@@ -20,7 +20,7 @@ flags.frame_id = 0
 flags.ok = False
 
 BOARD = np.array([ [(j * cfgs.SQUARE_SIZE_MM, i * cfgs.SQUARE_SIZE_MM, 0.)]
-    for i in range(cfgs.N_CHESS_BORAD_HEIGHT) for j in range(cfgs.N_CHESS_BORAD_WIDTH) ])
+    for i in range(cfgs.N_CHESS_BORAD_HEIGHT) for j in range(cfgs.N_CHESS_BORAD_WIDTH) ], dtype=np.float32)
 
 class calib_t(EasyDict):
     def __init__(self):
@@ -36,7 +36,7 @@ class calib_t(EasyDict):
         "ok":False,
         })
 
-class Fisheye:
+class Normal:
     def __init__(self):
         self.data = calib_t()
         self.inited = False
@@ -50,27 +50,26 @@ class Fisheye:
         #self._calc_reproj_err(corners)
     def _update_init(self, board, corners, frame_size):
         data = self.data
-        data.type = "FISHEYE"
+        data.type = "NORMAL"
         data.camera_mat = np.eye(3, 3)
-        data.dist_coeff = np.zeros((4, 1))
-        data.ok, data.camera_mat, data.dist_coeff, data.rvecs, data.tvecs = cv2.fisheye.calibrate(
+        data.dist_coeff = np.zeros((8, 1))
+        data.ok, data.camera_mat, data.dist_coeff, data.rvecs, data.tvecs = cv2.calibrateCamera(
             board, corners, frame_size, data.camera_mat, data.dist_coeff,
-            flags=cv2.fisheye.CALIB_FIX_SKEW|cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC,
             criteria=(cv2.TERM_CRITERIA_COUNT, 30, 0.1))
         data.ok = data.ok and cv2.checkRange(data.camera_mat) and cv2.checkRange(data.dist_coeff)
     def _update_refine(self, board, corners, frame_size):
         data = self.data
-        data.ok, data.camera_mat, data.dist_coeff, data.rvecs, data.tvecs = cv2.fisheye.calibrate(
+        data.ok, data.camera_mat, data.dist_coeff, data.rvecs, data.tvecs = cv2.calibrateCamera(
             board, corners, frame_size, data.camera_mat, data.dist_coeff,
-            flags=cv2.fisheye.CALIB_FIX_SKEW|cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC|cv2.CALIB_USE_INTRINSIC_GUESS,
-            criteria=(cv2.TERM_CRITERIA_COUNT, 10, 0.1))
+            flags=cv2.CALIB_USE_INTRINSIC_GUESS,
+            criteria=(cv2.TERM_CRITERIA_COUNT, 5, 0.1))
         data.ok = data.ok and cv2.checkRange(data.camera_mat) and cv2.checkRange(data.dist_coeff)
     def _calc_reproj_err(self, corners):
         if not self.inited: return
         data = self.data
         data.reproj_err = []
         for i in range(len(corners)):
-            corners_reproj = cv2.fisheye.projectPoints(BOARD[i], data.rvecs[i], data.tvecs[i], data.camera_mat, data.dist_coeff)
+            corners_reproj = cv2.projectPoints(BOARD[i], data.rvecs[i], data.tvecs[i], data.camera_mat, data.dist_coeff)
             err = cv2.norm(corners_reproj, corners[i], cv2.NORM_L2);
             data.reproj_err.append(err)
 
@@ -111,11 +110,9 @@ class history_t:
 history = history_t()
 
 cap = cv2.VideoCapture(cfgs.CAMERA_ID)
-cap.set(3, 1600)
-cap.set(4, 1200)
 if not cap.isOpened(): raise "camera open failed"
 
-fisheye = Fisheye()
+normal = Normal()
 
 while True:
     ok, raw_frame = cap.read()
@@ -131,9 +128,9 @@ while True:
         history.append(current)
 
     if len(history) >= cfgs.N_CALIBRATE_SIZE and history.updated:
-        fisheye.update(history.get_corners(), raw_frame.shape[1::-1])
-        calib = fisheye.data
-        calib.map1, calib.map2 = cv2.fisheye.initUndistortRectifyMap(
+        normal.update(history.get_corners(), raw_frame.shape[1::-1])
+        calib = normal.data
+        calib.map1, calib.map2 = cv2.initUndistortRectifyMap(
             calib.camera_mat, calib.dist_coeff, np.eye(3, 3), calib.camera_mat, raw_frame.shape[1::-1], cv2.CV_16SC2)
 
     if len(history) >= cfgs.N_CALIBRATE_SIZE:
@@ -156,18 +153,16 @@ def undistort(frame):
     global frame_shape
     if frame_shape is None:
         frame_shape = frame.shape[1::-1]
-        map1, map2 = cv2.fisheye.initUndistortRectifyMap(
+        map1, map2 = cv2.initUndistortRectifyMap(
             camera_mat, dist_coeff, np.eye(3, 3), camera_mat, frame_shape, cv2.CV_16SC2)
     undist_frame = cv2.remap(frame, map1, map2, cv2.INTER_LINEAR);
     return undist_frame
 if __name__ == "__main__":
     cap = cv2.VideoCapture({})
-    cap.set(3, 1600)
-    cap.set(4, 1200)
     if not cap.isOpened(): raise "camera open failed"
     ok, raw_frame = cap.read()
     if not ok: raise "image read failed"
     undist_frame = undistort(raw_frame)
     cv2.imwrite("sample.png", undist_frame)
-""".format(fisheye.data.camera_mat.tolist(), fisheye.data.dist_coeff.tolist(), cfgs.CAMERA_ID)
+""".format(normal.data.camera_mat.tolist(), normal.data.dist_coeff.tolist(), cfgs.CAMERA_ID)
     f.write(str(script))

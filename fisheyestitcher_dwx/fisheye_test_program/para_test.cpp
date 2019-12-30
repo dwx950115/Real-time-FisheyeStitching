@@ -8,13 +8,18 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/calib3d.hpp> // for findHomograph
+#include <Eigen/Dense>
+#include <opencv2/core/eigen.hpp>
 
 
 using namespace std;
 using namespace cv;
+using namespace Eigen;
+using Eigen::MatrixXd;
 
 #define     MY_DEBUG      0
 #define     MAX_FOVD      210.0f
+#define     pi            3.1415926
 
 //  多项式系数
 #define    P1_    -7.5625e-17
@@ -36,7 +41,11 @@ fish_unwarp( const cv::Mat &map_x, const cv::Mat &map_y, const cv::Mat &src, cv:
     remap(src, dst, map_x, map_y, INTER_LINEAR, BORDER_CONSTANT, Scalar(0, 0, 0));
 } /* fish_unwarp() */
 
-
+void
+fish_angle_regulation(const cv::Mat &map_angle_x, const cv::Mat &map_angle_y, const cv::Mat &src, cv::Mat &angle_tmp)
+{
+    remap(src, angle_tmp, map_angle_x, map_angle_y, INTER_LINEAR, BORDER_CONSTANT, Scalar(0, 0, 0));
+}
 /***************************************************************************************************
 *
 * Function: convert fisheye-vertical to equirectangular 
@@ -110,6 +119,134 @@ fish_2D_map( cv::Mat &map_x, cv::Mat &map_y, int Hs, int Ws, int Hd, int Wd, flo
 
 } /* fish_2D_map() */
 
+/***************************************************************************************************
+*
+* cam_yaw cam_pitch cam_roll
+*
+***************************************************************************************************/
+void
+euler_angle_rotation(double cam_yaw, double cam_pitch, double cam_roll, Matrix3d R)
+{
+    Matrix3d R_x(3, 3), R_y(3, 3), R_z(3, 3), R_y_x(3, 3);
+    R_x << 1, 0, 0,0, cos(cam_yaw), -sin(cam_yaw),0, sin(cam_yaw), cos(cam_yaw);
+    R_y << cos(cam_pitch), 0, sin(cam_pitch),0, 1, 0,-sin(cam_pitch), 0, cos(cam_pitch);
+    R_z << cos(cam_roll), -sin(cam_roll), 0,sin(cam_roll),cos(cam_roll), 0,0, 0, 1;
+    R_y_x = R_y * R_x;
+    R = R_z * R_y_x;
+    cout << R << endl;
+}/* euler_angle_rotation() */
+
+/***************************************************************************************************
+*
+* Map 2D fisheye image to 2D projected sphere and transform the angle
+*
+***************************************************************************************************/
+void
+pixel2point(int u, int v, 
+            double cam_fx, double cam_fy, double cam_u0, double cam_v0, 
+            MatrixXd point, int Hs, int Ws)
+{
+    double pixel_r = sqrt(pow((u - cam_u0), 2)+pow((v - cam_v0), 2));
+    double pixel_theta = pixel_r/cam_fx;
+    double p_z = cos(pixel_theta);
+    double p_x = sin(pixel_theta)*(u - cam_u0)/pixel_r;
+    double p_y = sin(pixel_theta)*(v - cam_v0)/pixel_r;
+    // point << p_x, p_y, p_z;
+    point(((v-1)*Hs)+u-1,0) = p_x;
+    point(((v-1)*Hs)+u-1,1) = p_y;
+    point(((v-1)*Hs)+u-1,2) = p_z;
+    // cout << "point x  : "<< point(((v-1)*Hs)+u-1,0) << endl;
+}
+void
+point2pixel(MatrixXd points, MatrixXd indxy, 
+            double cam_fx, double cam_fy, double cam_u0, double cam_v0, int Hs, int Ws )
+{
+    for (int i=0; i<Hs*Ws; i++)
+    {
+        double point_theta = acos(points(i,2)/(sqrt(pow(points(i,0),2)+pow(points(i,1),2)+pow(points(i,2),2))));
+        double px, py;
+        if (point_theta > pi)
+        {
+            point_theta = pi*2-point_theta;
+        }
+        if (points(i,0)==0 || points(i,1) == 0)
+        {
+            px = points(i,0)*cam_fx*point_theta/sqrt(pow(0.001, 2)+pow(0.001, 2))+cam_u0;
+            py = points(i,1)*cam_fy*point_theta/sqrt(pow(0.001, 2)+pow(0.001, 2))+cam_v0;
+        }
+        px = points(i,0)*cam_fx*point_theta/sqrt(pow(points(i,0),2)+pow(points(i,1),2))+cam_u0;
+        py = points(i,1)*cam_fy*point_theta/sqrt(pow(points(i,0),2)+pow(points(i,1),2))+cam_v0;
+        // indxy << px,py;
+        indxy(0, i) = px;
+        indxy(1, i) = py;
+    }
+    cout << indxy.rows() << "," << indxy.cols() << endl;
+}
+void 
+angle_transformation( cv::Mat &map_angle_x, cv::Mat &map_angle_y, float cam_yaw, float cam_pitch, float cam_roll,
+                    float cam_fx, float cam_fy, float cam_u0, float cam_v0,
+                    int Hs, int Ws )
+{
+    Matrix3f R(3, 3), R_inversed(3, 3);
+    MatrixXf points_transd(Hs*Ws, 3), points(Hs*Ws, 3), point(Hs*Ws, 3);
+    MatrixXf map_x_matrix(Hs, Ws), map_y_matrix(Hs, Ws);
+    Matrix3f R_x(3, 3), R_y(3, 3), R_z(3, 3), R_y_x(3, 3);
+    // euler_angle_rotation(cam_yaw, cam_pitch, cam_roll, R);
+    R_x << 1, 0, 0,0, cos(cam_yaw), -sin(cam_yaw),0, sin(cam_yaw), cos(cam_yaw);
+    R_y << cos(cam_pitch), 0, sin(cam_pitch),0, 1, 0,-sin(cam_pitch), 0, cos(cam_pitch);
+    R_z << cos(cam_roll), -sin(cam_roll), 0,sin(cam_roll),cos(cam_roll), 0,0, 0, 1;
+    R_y_x = R_y * R_x;
+    R = R_z * R_y_x;
+    R_inversed = R.transpose();
+    for(int v=0; v<Hs; v++)
+    {
+        for(int u=0; u<Ws; u++)
+        {
+            // pixel2point(u, v, cam_fx, cam_fy, cam_u0, cam_v0, points, Hs, Ws);
+            float pixel_r = sqrt(pow((u - cam_u0), 2)+pow((v - cam_v0), 2));
+            float pixel_theta = pixel_r/cam_fx;
+            float p_z = cos(pixel_theta);
+            float p_x = sin(pixel_theta)*(u - cam_u0)/pixel_r;
+            float p_y = sin(pixel_theta)*(v - cam_v0)/pixel_r;
+
+            points((v*Ws)+u,0) = p_x;
+            points((v*Ws)+u,1) = p_y;
+            points((v*Ws)+u,2) = p_z;
+        }
+    }
+
+    points_transd = (R_inversed * points.transpose()).transpose();
+    // point2pixel(points_transd, indxy, cam_fx, cam_fy, cam_u0, cam_v0, Hs, Ws);
+    int row = 1, col = 1;
+    for (int i=0; i<Hs*Ws; i++)
+    {
+        float point_theta = acos(points_transd(i,2)/(sqrt(pow(points_transd(i,0),2)+pow(points_transd(i,1),2)+pow(points_transd(i,2),2))));
+        float px, py;
+        if (point_theta > pi)
+        {
+            point_theta = pi*2-point_theta;
+        }
+        if (points_transd(i,0)==0 || points_transd(i,1) == 0)
+        {
+            px = points_transd(i,0)*cam_fx*point_theta/sqrt(pow(0.001, 2)+pow(0.001, 2))+cam_u0;
+            py = points_transd(i,1)*cam_fy*point_theta/sqrt(pow(0.001, 2)+pow(0.001, 2))+cam_v0;
+        }
+        px = points_transd(i,0)*cam_fx*point_theta/sqrt(pow(points_transd(i,0),2)+pow(points_transd(i,1),2))+cam_u0;
+        py = points_transd(i,1)*cam_fy*point_theta/sqrt(pow(points_transd(i,0),2)+pow(points_transd(i,1),2))+cam_v0;
+
+        map_x_matrix(row-1, col-1) = px;
+        map_y_matrix(row-1, col-1) = py;
+        col++;
+        if ((i+1)%Ws == 0)
+        {
+            row++;
+            col = 1;
+            
+        }
+    }
+    eigen2cv(map_x_matrix, map_angle_x);
+    eigen2cv(map_y_matrix, map_angle_y);
+}
 /***************************************************************************************************
 *
 * Fisheye Light Fall-off Compensation: Scale_Map Construction
@@ -476,21 +613,55 @@ int main( int argc, char** argv )
 *
 ***************************************************************************************************/
     Mat frame1, frame2,ROIImage1, ROIImage2,mask1,mask2,gray_Image1, gray_Image2,  CutFrame1,  CutFrame2;
-	
+	Mat angle_tmp1(1200,1600,CV_8UC3,Scalar(0,0,0));
+    Mat angle_tmp2(1200,1600,CV_8UC3,Scalar(0,0,0));
     float fovd = 210.0f;
     bool  disable_light_compen = 1;
     bool  disable_refine_align = 1;
 
     int W_in = 1920; // default: video 3840X1920
-    
+    float cam1_yaw = 0;
+    float cam1_pitch = pi*30/180;
+    float cam1_roll = 0;
+    float cam2_yaw = 0;
+    float cam2_pitch = pi*30/180;
+    float cam2_roll = 0;
+    /***************************************************************************************************
+    *
+    * camera parameter 
+    *
+    ***************************************************************************************************/
+    float cam_mat1[3][3] = {{306.2179554207244, 0.0, 827.6396074947415}, {0.0, 306.4032729038873, 612.7686375589241}, {0.0, 0.0, 1.0}};
+    float cam_dist1[4] = {0.061469387879628086, -0.018668965639305285, 0.03781464752574166, -0.02677018297407956};
+    float cam_mat2[3][3] = {{305.8103327739443, 0.0, 868.4087733419921}, {0.0, 306.2007353016409, 628.2346880123545}, {0.0, 0.0, 1.0}};
+    float cam_dist2[4] = {0.05474630002513208, -0.003933657882507959, 0.03314157850495621, -0.03770454084099611}; 
+    // cam_1
+    float cam1_fx = cam_mat1[0][0];
+    float cam1_fy = cam_mat1[1][1];
+    float cam1_u0 = cam_mat1[0][2];
+    float cam1_v0 = cam_mat1[1][2];
+    float p1_1 = cam_dist1[0];
+    float p1_2 = cam_dist1[1];
+    float p1_3 = cam_dist1[2];
+    float p1_4 = cam_dist1[3];
+    //cam_2
+    float cam2_fx = cam_mat2[0][0];
+    float cam2_fy = cam_mat2[1][1];
+    float cam2_u0 = cam_mat2[0][2];
+    float cam2_v0 = cam_mat2[1][2];
+    float p2_1 = cam_dist2[0];
+    float p2_2 = cam_dist2[1];
+    float p2_3 = cam_dist2[2];
+    float p2_4 = cam_dist2[3];
+
     Mat in_img, in_img_L, in_img_R;
     
     VideoCapture capture1(0);
 	VideoCapture capture2(1);
-	capture1.set(CV_CAP_PROP_FRAME_WIDTH, 3264 );
-	capture1.set(CV_CAP_PROP_FRAME_HEIGHT, 2448);
-	capture2.set(CV_CAP_PROP_FRAME_WIDTH, 3264);
-	capture2.set(CV_CAP_PROP_FRAME_HEIGHT, 2448);
+	capture1.set(CV_CAP_PROP_FRAME_WIDTH, 1600);
+	capture1.set(CV_CAP_PROP_FRAME_HEIGHT, 1200);
+	capture2.set(CV_CAP_PROP_FRAME_WIDTH, 1600);
+	capture2.set(CV_CAP_PROP_FRAME_HEIGHT, 1200);
 	capture1.set(CAP_PROP_FOURCC, VideoWriter::fourcc('M', 'J', 'P', 'G'));
 	capture2.set(CAP_PROP_FOURCC, VideoWriter::fourcc('M', 'J', 'P', 'G'));
 	if (!capture1.isOpened())
@@ -524,8 +695,18 @@ int main( int argc, char** argv )
     Mat map_x(Hd, Wd, CV_32FC1);
     Mat map_y(Hd, Wd, CV_32FC1);
     Mat scale_map(Hs, Ws, CV_32F);
-    // Mat mls_map_x, mls_map_y;
-
+    // Mat map_angle_x, map_angle_y;
+    Mat map1_angle_x(1200, 1600, CV_32FC1);
+    Mat map1_angle_y(1200, 1600, CV_32FC1);
+    Mat map2_angle_x(1200, 1600, CV_32FC1);
+    Mat map2_angle_y(1200, 1600, CV_32FC1);
+    // initial angle transformation
+    angle_transformation( map1_angle_x, map1_angle_y, cam1_yaw, cam1_pitch, cam1_roll,
+                    cam1_fx, cam1_fy, cam1_u0, cam1_v0,
+                    1200, 1600 );
+    angle_transformation( map2_angle_x, map2_angle_y, cam2_yaw, cam2_pitch, cam2_roll,
+                    cam2_fx, cam2_fy, cam2_u0, cam2_v0,
+                    1200, 1600 );
     //--------------------------------------------------------------------------
     // Scale_Map Reconstruction for Fisheye Light Fall-off Compensation
     //--------------------------------------------------------------------------
@@ -581,10 +762,10 @@ int main( int argc, char** argv )
 		capture1.retrieve(frame1);
 		capture2.retrieve(frame2);
 
-  //       CutFrame1 = frame1(Rect(255,46,frame1.cols-460 , frame1.rows-60)); //(1140*1140)
-  //       CutFrame2 = frame2(Rect(294,57,frame2.cols-460 , frame2.rows-60)); //(1140*1140)
+        // CutFrame1 = frame1(Rect(255,46,frame1.cols-460 , frame1.rows-60)); //(1140*1140)
+        // CutFrame2 = frame2(Rect(294,57,frame2.cols-460 , frame2.rows-60)); //(1140*1140)
 
-  //       ROIImage1 = frame3(Rect(0,0,1140,1140));
+        // ROIImage1 = frame3(Rect(0,0,1140,1140));
 		// ROIImage2 = frame3(Rect(1140, 0, 1140, 1140));
 
 		// cvtColor(CutFrame1, gray_Image1,CV_RGB2GRAY);
@@ -594,29 +775,29 @@ int main( int argc, char** argv )
 		// CutFrame1.copyTo(ROIImage1, mask1);
 		// CutFrame2.copyTo(ROIImage2, mask2);
 
-  //       // resize frame3
-  //       Mat res_frame3(1920, 3840, frame3.type());
-  //       resize(frame3, res_frame3, res_frame3.size(), INTER_LINEAR);
+        // // resize frame3
+        // Mat res_frame3(1920, 3840, frame3.type());
+        // resize(frame3, res_frame3, res_frame3.size(), INTER_LINEAR);
 
-  //       //--------------------------------------------------------------------------
-  //       // Read frames and process
-  //       //--------------------------------------------------------------------------
-  //       // Read input fisheye images
-  //       in_img = res_frame3;
-  //       in_img_L = in_img(Rect(0, 0, Worg / 2, Horg));        // left fisheye
-  //       in_img_R = in_img(Rect(Worg / 2, 0, Worg / 2, Horg)); // right fisheye
-  //       // Stitch
-  //       //--------------------------------------------------------------------------
-  //   	// Fisheye Unwarping
-  //  		//--------------------------------------------------------------------------
-  //  		Mat left_unwarped, right_unwarped;
-	 //    Mat left_img_compensated(in_img_L.size(), in_img_L.type());
-  //  		Mat right_img_compensated(in_img_R.size(), in_img_R.type());
-  //       fish_lighFO_compen(left_img_compensated, in_img_L, scale_map);
-  //       fish_lighFO_compen(right_img_compensated, in_img_R, scale_map);
-  //   	fish_unwarp(map_x, map_y, left_img_compensated, left_unwarped);
-  //   	fish_unwarp(map_x, map_y, right_img_compensated, right_unwarped);
-	 //    //--------------------------------------------------------------------------
+        // //--------------------------------------------------------------------------
+        // // Read frames and process
+        // //--------------------------------------------------------------------------
+        // // Read input fisheye images
+        // in_img = res_frame3;
+        // in_img_L = in_img(Rect(0, 0, Worg / 2, Horg));        // left fisheye
+        // in_img_R = in_img(Rect(Worg / 2, 0, Worg / 2, Horg)); // right fisheye
+        // // Stitch
+        // //--------------------------------------------------------------------------
+    	// // Fisheye Unwarping
+   		// //--------------------------------------------------------------------------
+   		// Mat left_unwarped, right_unwarped;
+	    // Mat left_img_compensated(in_img_L.size(), in_img_L.type());
+   		// Mat right_img_compensated(in_img_R.size(), in_img_R.type());
+        // fish_lighFO_compen(left_img_compensated, in_img_L, scale_map);
+        // fish_lighFO_compen(right_img_compensated, in_img_R, scale_map);
+    	// fish_unwarp(map_x, map_y, left_img_compensated, left_unwarped);
+    	// fish_unwarp(map_x, map_y, right_img_compensated, right_unwarped);
+	    // //--------------------------------------------------------------------------
 		// // left_unwarped Image for Adaptive Alignment
 		// //--------------------------------------------------------------------------
 		// Mat temp1 = left_unwarped(Rect(0, 0, int(Wd / 2), Hd -2 ));
@@ -626,30 +807,33 @@ int main( int argc, char** argv )
 		// // Mat leftImg_crop;
 		// // leftImg_crop = left_unwarped_arr(Rect(int(Wd / 2) - (W_in / 2), 0, W_in, Hd -2)); 
 		// // uint16_t crop = uint16_t(0.5 * Ws * (210.0 - 180.0) / 210.0); // half overlap region
-	 //    //--------------------------------------------------------------------------
-	 //    // right_unwarped Image for Adaptive Alignment
-	 //    //--------------------------------------------------------------------------
-	 //    Mat rightImg_crop;
-	 //    rightImg_crop = right_unwarped(Rect(int(Wd / 2) - (W_in / 2), 0, W_in, Hd -2)); 
-	 //    //--------------------------------------------------------------------------
-	 //    // PARAMETERS (hard-coded) for dual-fisheye
-	 //    //--------------------------------------------------------------------------
+	    // //--------------------------------------------------------------------------
+	    // // right_unwarped Image for Adaptive Alignment
+	    // //--------------------------------------------------------------------------
+	    // Mat rightImg_crop;
+	    // rightImg_crop = right_unwarped(Rect(int(Wd / 2) - (W_in / 2), 0, W_in, Hd -2)); 
+	    // //--------------------------------------------------------------------------
+	    // // PARAMETERS (hard-coded) for dual-fisheye
+	    // //--------------------------------------------------------------------------
 
-	 //    //--------------------------------------------------------------
-	 //    // Blend Images
-	 //    //--------------------------------------------------------------
-	 //    fish_blend(left_unwarped_arr, rightImg_crop, pano, binary_mask, blend_post);
+	    // //--------------------------------------------------------------
+	    // // Blend Images
+	    // //--------------------------------------------------------------
+	    // fish_blend(left_unwarped_arr, rightImg_crop, pano, binary_mask, blend_post);
 
-  //       Mat resize_pano(800,1600, pano.type());
-  //       resize(pano, resize_pano, resize_pano.size(), 0, 0, INTER_LINEAR);
+        // Mat resize_pano(800,1600, pano.type());
+        // resize(pano, resize_pano, resize_pano.size(), 0, 0, INTER_LINEAR);
 
-
+        fish_angle_regulation(map1_angle_x, map1_angle_y, frame1, angle_tmp1);
+        fish_angle_regulation(map1_angle_x, map1_angle_y, frame2, angle_tmp2);
 
         // //debug :
-		imshow("【frame1】", frame1);
-		imwrite("/home/neousys/duweixin/Real-time-FisheyeStitching/fisheyestitcher_dwx/fisheye_test_program/result_picture/frame1.jpg",frame1);
-		imshow("【frame2】", frame2);
-		imwrite("/home/neousys/duweixin/Real-time-FisheyeStitching/fisheyestitcher_dwx/fisheye_test_program/result_picture/frame2.jpg",frame2);
+		// imshow("【frame1】", frame1);
+		// imwrite("/home/neousys/duweixin/FisheyePro/fisheyestitcher_dwx/fisheye_test_program/frame1.jpg",frame1);
+        imshow("【frame1】", angle_tmp1);
+		imwrite("/home/neousys/duweixin/FisheyePro/fisheyestitcher_dwx/fisheye_test_program/angle_tmp1.jpg",angle_tmp1);
+		// imshow("【frame2】", frame2);
+		// imwrite("/home/neousys/duweixin/FisheyePro/fisheye_test_program/frame2.jpg",frame2);
 		// imshow("【CutFrame1】", CutFrame1);
 		// imshow("【CutFrame2】", CutFrame2);
         // imshow("【视频窗口一】", res_CutFrame1);
