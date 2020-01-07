@@ -421,7 +421,7 @@ int main( int argc, char** argv )
     * outputpath initialize
     ***************************************************************************************************/
     // initialize outputpath intersectionId positionId
-	string outputpath,outputpath_root;
+	string outputpath,outputpath_source,outputpath_root;
 	int intersectionId,positionId;
 
 	// get the argument
@@ -475,6 +475,7 @@ int main( int argc, char** argv )
 
     // get the outputpath and name. 
     outputpath = outputpath_root + "/intersection-" + to_string(intersectionId) + "-" + to_string(positionId) + ".avi";
+    outputpath_source = outputpath_root + "/source_intersection-" + to_string(intersectionId) + "-" + to_string(positionId) + ".avi";
 
     /***************************************************************************************************
     * initialize the (yaw pitch roll)
@@ -607,8 +608,9 @@ int main( int argc, char** argv )
 	}
 
 	// videowriter
-	VideoWriter outputvideo;
+	VideoWriter outputvideo,outputvideo_source;
 	outputvideo.open(outputpath, CV_FOURCC('M', 'J', 'P', 'G'), 20.0, Size(1600, 800), true);
+    outputvideo_source.open(outputpath_source, CV_FOURCC('M', 'J', 'P', 'G'), 20.0, Size(3840, 1920), true);
 
     Mat pano,ROIImage1,ROIImage2,mask1,mask2,gray_Image1,gray_Image2,CutFrame1,CutFrame2;
 
@@ -658,6 +660,7 @@ int main( int argc, char** argv )
 
         //output and write
 		outputvideo.write(resize_pano);
+        outputvideo_source.write(res_frame3);
         
         // //angle transformation
         // fish_angle_regulation(map1_angle_x, map1_angle_y, frame1, angle_tmp1);
@@ -688,6 +691,7 @@ int main( int argc, char** argv )
         // imwrite("/home/neousys/duweixin/FisheyePro/fisheyestitcher_dwx/fisheye_test_program/resize_pano.jpg", resize_pano);
 
         resize_pano.release();
+        res_frame3.release();
         // if key get pressed, break
 		if (waitKey(1) == 27)
 		{
@@ -695,5 +699,6 @@ int main( int argc, char** argv )
 		}
     }
     outputvideo.release();
+    outputvideo_source.release();
 	return 0;
 }

@@ -6,4 +6,8 @@
 
 3. fish2sphere_test1.cpp : generated from myself. no utils, no MLS, only unwarp and concat and fish_blend.
 
-4. fish2sphere_test2.cpp : have a try form source code to generate the fisheyeStitching image directely. only cut the image and resize the image.
+4. fish2sphere_test2.cpp : add fish_blend_directly and  fish_angle_regulation code
+
+5. fisheye_thread.cpp : modify the videocapture directly and change to caputer video from two thread.
+
+6. fisheye_thread_light.cpp : capture pano video and dual fisheye source video.
