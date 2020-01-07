@@ -1,6 +1,8 @@
 #include <iostream>
 #include <fstream>
 #include <string>
+#include <thread>
+#include <pthread.h>
 
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/core.hpp>
@@ -10,7 +12,9 @@
 #include <opencv2/calib3d.hpp> // for findHomograph
 #include <Eigen/Dense>
 #include <opencv2/core/eigen.hpp>
-
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 
 using namespace std;
 using namespace cv;
@@ -18,7 +22,8 @@ using namespace Eigen;
 using Eigen::MatrixXd;
 
 #define     MY_DEBUG      0
-#define     MAX_FOVD      210.0f
+#define     TEST          1
+#define     MAX_FOVD      200.0f
 #define     pi            3.1415926
 
 //  多项式系数
@@ -118,70 +123,11 @@ fish_2D_map( cv::Mat &map_x, cv::Mat &map_y, int Hs, int Ws, int Hd, int Wd, flo
     }
 
 } /* fish_2D_map() */
-
-/***************************************************************************************************
-*
-* cam_yaw cam_pitch cam_roll
-*
-***************************************************************************************************/
-void
-euler_angle_rotation(double cam_yaw, double cam_pitch, double cam_roll, Matrix3d R)
-{
-    Matrix3d R_x(3, 3), R_y(3, 3), R_z(3, 3), R_y_x(3, 3);
-    R_x << 1, 0, 0,0, cos(cam_yaw), -sin(cam_yaw),0, sin(cam_yaw), cos(cam_yaw);
-    R_y << cos(cam_pitch), 0, sin(cam_pitch),0, 1, 0,-sin(cam_pitch), 0, cos(cam_pitch);
-    R_z << cos(cam_roll), -sin(cam_roll), 0,sin(cam_roll),cos(cam_roll), 0,0, 0, 1;
-    R_y_x = R_y * R_x;
-    R = R_z * R_y_x;
-    cout << R << endl;
-}/* euler_angle_rotation() */
-
 /***************************************************************************************************
 *
 * Map 2D fisheye image to 2D projected sphere and transform the angle
 *
 ***************************************************************************************************/
-void
-pixel2point(int u, int v, 
-            double cam_fx, double cam_fy, double cam_u0, double cam_v0, 
-            MatrixXd point, int Hs, int Ws)
-{
-    double pixel_r = sqrt(pow((u - cam_u0), 2)+pow((v - cam_v0), 2));
-    double pixel_theta = pixel_r/cam_fx;
-    double p_z = cos(pixel_theta);
-    double p_x = sin(pixel_theta)*(u - cam_u0)/pixel_r;
-    double p_y = sin(pixel_theta)*(v - cam_v0)/pixel_r;
-    // point << p_x, p_y, p_z;
-    point(((v-1)*Hs)+u-1,0) = p_x;
-    point(((v-1)*Hs)+u-1,1) = p_y;
-    point(((v-1)*Hs)+u-1,2) = p_z;
-    // cout << "point x  : "<< point(((v-1)*Hs)+u-1,0) << endl;
-}
-void
-point2pixel(MatrixXd points, MatrixXd indxy, 
-            double cam_fx, double cam_fy, double cam_u0, double cam_v0, int Hs, int Ws )
-{
-    for (int i=0; i<Hs*Ws; i++)
-    {
-        double point_theta = acos(points(i,2)/(sqrt(pow(points(i,0),2)+pow(points(i,1),2)+pow(points(i,2),2))));
-        double px, py;
-        if (point_theta > pi)
-        {
-            point_theta = pi*2-point_theta;
-        }
-        if (points(i,0)==0 || points(i,1) == 0)
-        {
-            px = points(i,0)*cam_fx*point_theta/sqrt(pow(0.001, 2)+pow(0.001, 2))+cam_u0;
-            py = points(i,1)*cam_fy*point_theta/sqrt(pow(0.001, 2)+pow(0.001, 2))+cam_v0;
-        }
-        px = points(i,0)*cam_fx*point_theta/sqrt(pow(points(i,0),2)+pow(points(i,1),2))+cam_u0;
-        py = points(i,1)*cam_fy*point_theta/sqrt(pow(points(i,0),2)+pow(points(i,1),2))+cam_v0;
-        // indxy << px,py;
-        indxy(0, i) = px;
-        indxy(1, i) = py;
-    }
-    cout << indxy.rows() << "," << indxy.cols() << endl;
-}
 void 
 angle_transformation( cv::Mat &map_angle_x, cv::Mat &map_angle_y, float cam_yaw, float cam_pitch, float cam_roll,
                     float cam_fx, float cam_fy, float cam_u0, float cam_v0,
@@ -191,6 +137,7 @@ angle_transformation( cv::Mat &map_angle_x, cv::Mat &map_angle_y, float cam_yaw,
     MatrixXf points_transd(Hs*Ws, 3), points(Hs*Ws, 3), point(Hs*Ws, 3);
     MatrixXf map_x_matrix(Hs, Ws), map_y_matrix(Hs, Ws);
     Matrix3f R_x(3, 3), R_y(3, 3), R_z(3, 3), R_y_x(3, 3);
+    
     // euler_angle_rotation(cam_yaw, cam_pitch, cam_roll, R);
     R_x << 1, 0, 0,0, cos(cam_yaw), -sin(cam_yaw),0, sin(cam_yaw), cos(cam_yaw);
     R_y << cos(cam_pitch), 0, sin(cam_pitch),0, 1, 0,-sin(cam_pitch), 0, cos(cam_pitch);
@@ -241,7 +188,6 @@ angle_transformation( cv::Mat &map_angle_x, cv::Mat &map_angle_y, float cam_yaw,
         {
             row++;
             col = 1;
-            
         }
     }
     eigen2cv(map_x_matrix, map_angle_x);
@@ -382,6 +328,8 @@ fish_create_blend_mask( const cv::Mat &cir_mask, const cv::Mat &inner_cir_mask,
     Mat mask_ = ring_mask_unwarped(Rect(Wd2-Ws2, 0, Ws, Hd)); 
     mask_.convertTo(mask_, CV_8UC3);
 
+    // int H_ = mask_.size().height;
+    // int W_ = mask_.size().width;
     int H_ = mask_.size().height;
     int W_ = mask_.size().width;
 
@@ -438,7 +386,6 @@ fish_create_blend_mask( const cv::Mat &cir_mask, const cv::Mat &inner_cir_mask,
     imwrite("./output/mask.jpg", mask_);
 #endif
 }
-
 
 /***************************************************************************************************
 *
@@ -528,100 +475,140 @@ fish_blend_left( cv::Mat &bg, cv::Mat &bg1, cv::Mat &bg2 )
 *    Output: blended pano
 *
 ***************************************************************************************************/
-void 
-fish_blend( const cv::Mat &left_img, const cv::Mat &right_img_aligned, cv::Mat &pano,
-            const cv::Mat &binary_mask, const std::vector<int> &blend_post )
-{ 
-    Mat mask = binary_mask;
-
-    int H = mask.size().height;
-    int W = mask.size().width;
-
-    int Worg = 1920;
-    int imH = left_img.size().height;
-    int imW = left_img.size().width;
-    Mat left_img_cr = left_img(Rect(imW / 2 + 1 - Worg / 2, 0, Worg, imH));
-    int  sideW = 45; //45
-    // Mat left_blend, right_blend;
-
-#if MY_DEBUG
-    imwrite("./output/left_img.jpg", left_img);
-    imwrite("./output/left_img_cr.jpg", left_img_cr);
+void
+fish_blend_directly(const cv::Mat &left_unwarped, const cv::Mat &right_unwarped, cv::Mat &pano,
+                    float cam1_u0, float cam1_fx, float cam2_u0, float cam2_fx)
+{
+    int imH = left_unwarped.size().height;
+    int imW = left_unwarped.size().width;
+    Mat left_img_crop_left = left_unwarped(Rect(imW*8/36,0,imW*1.5/36,imH));
+    Mat left_img_crop_right = left_unwarped(Rect(imW*26.5/36,0,imW*1.5/36,imH));
+    Mat right_img_crop_left = right_unwarped(Rect(imW*7.5/36,0,imW*1.5/36,imH));
+    Mat right_img_crop_right = right_unwarped(Rect(imW*27/36,0,imW*1.5/36,imH));
+#if TEST
+    imwrite("./result_picture/right_img_crop_left.jpg", right_img_crop_left);
+    imwrite("./result_picture/left_img_crop_right.jpg", left_img_crop_right);
+    imwrite("./result_picture/left_img_crop_left.jpg", left_img_crop_left);
+    imwrite("./result_picture/right_img_crop_right.jpg", right_img_crop_right);
 #endif
 
-    for (int r = 0; r < H; ++r)
-    {
-        int p = blend_post[r];
+    Mat bleft, bright;
+    fish_blend_left(bleft, left_img_crop_right, right_img_crop_left);
+    fish_blend_right(bright, left_img_crop_left,right_img_crop_right);
+    // Update left boundary
+    bleft.copyTo(left_img_crop_right);
+    bleft.copyTo(right_img_crop_left);
+    // Update right boundary
+    bright.copyTo(left_img_crop_left);
+    bright.copyTo(right_img_crop_right);
 
-        if (p == 0)
-        {
-            continue;
-        }
-        // Left boundary
-        Mat lf_win_1 = left_img_cr(Rect(p - sideW, r, 2 * sideW, 1)); // kuan du 90
-        Mat rt_win_1 = right_img_aligned(Rect(p - sideW, r, 2 * sideW, 1));  //kuandu 90
-        // Right boundary
-        Mat lf_win_2 = left_img_cr(Rect((W - p - sideW), r, 2 * sideW, 1)); //kuandu 90
-        Mat rt_win_2 = right_img_aligned(Rect((W - p - sideW), r, 2 * sideW, 1)); // kuandu 90
-        // Blend(ramp)
-        Mat bleft, bright;
-        fish_blend_left(bleft, lf_win_1, rt_win_1);
-        fish_blend_right(bright, lf_win_2, rt_win_2);
-        // Update left boundary
-        bleft.copyTo(lf_win_1);
-        bleft.copyTo(rt_win_1);
-        // Update right boundary
-        bright.copyTo(lf_win_2);
-        bright.copyTo(rt_win_2);
-    }
+    // BLENDING 
+    Mat temp1,temp2,temp3;
+    Mat part1 = left_unwarped(Rect(imW*18/36,0,imW*8.5/36,imH));
+    Mat part2 = left_img_crop_right;
+    Mat part3 = right_unwarped(Rect(imW*9/36,0,imW*18/36,imH));
+    Mat part4 = left_img_crop_left;
+    Mat part5 = left_unwarped(Rect(imW*9.5/36,0,imW*8.5/36,imH));
+    cv::hconcat(part1,part2,temp1);
+    cv::hconcat(temp1,part3,temp2);
+    cv::hconcat(temp2,part4,temp3);
+    cv::hconcat(temp3,part5,pano);
+}
 
-#if MY_DEBUG
-    imwrite("./output/left_crop_blend.jpg", left_img_cr);
-    imwrite("./output/right_blend.jpg", right_img_aligned);
-#endif
+void thread_devide(cv::Mat* g_matFrame, int cameraId)
+{
 
-    // BLENDING
-    Mat mask_ = mask(Rect(0, 0, mask.size().width, mask.size().height - 2));
-    Mat mask_n;
-    bitwise_not(mask_, mask_n);
-    bitwise_and(left_img_cr, mask_, left_img_cr); // Left image
-    // 
-    Mat temp1 = left_img(Rect(0, 0, (imW / 2 - Worg / 2), imH));
-    Mat temp2 = left_img(Rect((imW / 2 + Worg / 2), 0, (imW / 2 - Worg / 2), imH));
-    Mat t;
-    cv::hconcat(temp1, left_img_cr, t);
-    cv::hconcat(t, temp2, left_img);
-    // 
-    bitwise_and(right_img_aligned, mask_n, right_img_aligned); // Right image
-    //
-    pano = left_img;
-    Mat temp = pano(Rect((imW / 2 - Worg / 2), 0, Worg, imH));
-    Mat t2;
-    bitwise_or(temp, right_img_aligned, t2);
-    t2.copyTo(temp); // updated pano
-#if MY_DEBUG
-    imwrite("./output/pano_update.jpg", pano);
-#endif
-} /* fish_blend() */
-
+	VideoCapture capture;
+	capture.open(cameraId);
+	capture.set(CV_CAP_PROP_FRAME_WIDTH, 1600);
+	capture.set(CV_CAP_PROP_FRAME_HEIGHT, 1200);
+	capture.set(CAP_PROP_FOURCC, VideoWriter::fourcc('M', 'J', 'P', 'G'));
+	while (true)
+	{
+		capture >> *g_matFrame;
+	}
+}
 
 int main( int argc, char** argv )
 {	
+    /***************************************************************************************************
+    *
+    * outputpath initialize
+    *
+    ***************************************************************************************************/
+    // initialize outputpath intersectionId positionId
+	string outputpath;
+	string outputpath_root;
+	int intersectionId;
+	int positionId;
+
+	// get the argument
+	if (argc == 1)
+    {
+        cout << "Wrong arguments\n" << "-------------------------\n";
+        cout << "please add the arguments \n" 
+        	<< "--DIR \n"
+        	<< "--intersectionId \n"
+        	<< "--positionId \n";
+        return -1;
+    }
+    for (int i = 1; i < argc; ++i)
+    {
+    	if (string(argv[i]) == "--dir")
+    	{
+    		outputpath_root = argv[i + 1];
+    		i++;
+    	}
+        else if (string(argv[i]) == "--intersectionId")
+        {
+            intersectionId = (float)atof(argv[i + 1]);
+            i++;
+        }
+        else if (string(argv[i]) == "--positionId")
+        {
+            positionId = (float)atof(argv[i + 1]);
+            i++;
+        }
+        else
+            ;
+    }
+    // if the dir is not existed, then make it.
+    if (access(outputpath_root.c_str(), 0) == -1)
+    {
+    	cout << "----------------------------------\n";
+    	cout << "the path " << outputpath_root << " is not existing\n" << "now make it\n";
+    	int flag = mkdir(outputpath_root.c_str(), 0777);
+    	if (flag == 0) 
+    	{
+    		cout << "make dir successfully\n";
+    	}
+    	cout << "----------------------------------\n";
+    }
+    else
+    {
+    	cout << "----------------------------------\n";
+    	cout << "the path " << outputpath_root << " have existed \n";
+    	cout << "----------------------------------\n";
+    }
+
+    // get the outputpath and name. 
+    outputpath = outputpath_root + "/intersection-" + to_string(intersectionId) + "-" + to_string(positionId) + ".avi";
+
 /***************************************************************************************************
 *
 * 一个窗口显示两个摄像头
 *
 ***************************************************************************************************/
-    Mat frame1, frame2,ROIImage1, ROIImage2,mask1,mask2,gray_Image1, gray_Image2,  CutFrame1,  CutFrame2;
+    Mat frame1,frame2,ROIImage1,ROIImage2,mask1,mask2,gray_Image1,gray_Image2,CutFrame1,CutFrame2;
 	Mat angle_tmp1(1200,1600,CV_8UC3,Scalar(0,0,0));
     Mat angle_tmp2(1200,1600,CV_8UC3,Scalar(0,0,0));
-    float fovd = 210.0f;
+    float fovd = 200.0f;
     bool  disable_light_compen = 1;
     bool  disable_refine_align = 1;
 
     int W_in = 1920; // default: video 3840X1920
     float cam1_yaw = 0;
-    float cam1_pitch = pi*30/180;
+    float cam1_pitch = pi*0/180;
     float cam1_roll = 0;
     float cam2_yaw = 0;
     float cam2_pitch = pi*30/180;
@@ -656,26 +643,26 @@ int main( int argc, char** argv )
 
     Mat in_img, in_img_L, in_img_R;
     
-    VideoCapture capture1(0);
-	VideoCapture capture2(1);
-	capture1.set(CV_CAP_PROP_FRAME_WIDTH, 1600);
-	capture1.set(CV_CAP_PROP_FRAME_HEIGHT, 1200);
-	capture2.set(CV_CAP_PROP_FRAME_WIDTH, 1600);
-	capture2.set(CV_CAP_PROP_FRAME_HEIGHT, 1200);
-	capture1.set(CAP_PROP_FOURCC, VideoWriter::fourcc('M', 'J', 'P', 'G'));
-	capture2.set(CAP_PROP_FOURCC, VideoWriter::fourcc('M', 'J', 'P', 'G'));
-	if (!capture1.isOpened())
-	{
-		cout << "Cam1 is not open!" << endl;
-		return -1;
-	}
-	if (!capture2.isOpened())
-	{
-		cout << "Cam2 is not open!" << endl;
-		return -1;
-	}
+    // VideoCapture capture1(0);
+	// VideoCapture capture2(1);
+	// capture1.set(CV_CAP_PROP_FRAME_WIDTH, 1600);
+	// capture1.set(CV_CAP_PROP_FRAME_HEIGHT, 1200);
+	// capture2.set(CV_CAP_PROP_FRAME_WIDTH, 1600);
+	// capture2.set(CV_CAP_PROP_FRAME_HEIGHT, 1200);
+	// capture1.set(CAP_PROP_FOURCC, VideoWriter::fourcc('M', 'J', 'P', 'G'));
+	// capture2.set(CAP_PROP_FOURCC, VideoWriter::fourcc('M', 'J', 'P', 'G'));
+	// if (!capture1.isOpened())
+	// {
+	// 	cout << "Cam1 is not open!" << endl;
+	// 	return -1;
+	// }
+	// if (!capture2.isOpened())
+	// {
+	// 	cout << "Cam2 is not open!" << endl;
+	// 	return -1;
+	// }
 
-	Mat frame3(1140,2280,CV_8UC3,Scalar(0,0,0));
+	Mat frame3(cam1_fy*fovd*pi/180,cam1_fx*fovd*pi/180+cam2_fx*fovd*pi/180,CV_8UC3,Scalar(0,0,0));
     Mat temp_frame3(1920, 3840, frame3.type());
     //**************************************************************************
     // PreComputation
@@ -736,7 +723,7 @@ int main( int argc, char** argv )
     // Unwarp map_x, map_y, Light Fall-off Compensation
     //--------------------------------------------------------------------------
 	fish_2D_map(map_x, map_y, Hs, Ws, Hd, Wd, fovd);
-	CV_Assert( (Hs % 2 == 0) && (Ws % 2 == 0) );
+	// CV_Assert( (Hs % 2 == 0) && (Ws % 2 == 0) );
     //--------------------------------------------------------------------------
     // Create Circular mask to Crop the input W.R.T FOVD 
     // (mask all data outside the FOVD circle)
@@ -754,84 +741,94 @@ int main( int argc, char** argv )
 	fish_compen_map(Hs, Ws, R_pf, scale_map);
 	in_img.release();
 	Mat pano;
+    // -------------------------------------------------------------------------
+    // thread_spilt
+    // -------------------------------------------------------------------------
+    int cameraId1 = 0;
+	int cameraId2 = 1;
+	// two thread
+	thread thread_cam1(thread_devide, &frame1, cameraId1);
+	thread thread_cam2(thread_devide, &frame2, cameraId2);
+    sleep(2);
+
+	if (frame1.empty())
+	{
+		cout << "Cam1 is not open!" << endl;
+		return -1;
+	}
+	if (frame2.empty())
+	{
+		cout << "Cam2 is not open!" << endl;
+		return -1;
+	}
+
+	// videowriter
+	VideoWriter outputvideo;
+	outputvideo.open(outputpath, CV_FOURCC('M', 'J', 'P', 'G'), 20.0, Size(1600, 800), true);
+
 
     while (true)
 	{
-		capture1.grab();
-		capture2.grab();
-		capture1.retrieve(frame1);
-		capture2.retrieve(frame2);
+		// capture1.grab();
+		// capture2.grab();
+		// capture1.retrieve(frame1);
+		// capture2.retrieve(frame2);
 
-        // CutFrame1 = frame1(Rect(255,46,frame1.cols-460 , frame1.rows-60)); //(1140*1140)
-        // CutFrame2 = frame2(Rect(294,57,frame2.cols-460 , frame2.rows-60)); //(1140*1140)
+        CutFrame1 = frame1(Rect(cam1_u0-(cam1_fx*fovd*pi/(2*180)),cam1_v0-(cam1_fy*fovd*pi/(2*180)),cam1_fx*fovd*pi/180 , cam1_fy*fovd*pi/180)); //(1140*1140)
+        CutFrame2 = frame2(Rect(cam2_u0-(cam2_fx*fovd*pi/(2*180)),cam2_v0-(cam2_fy*fovd*pi/(2*180)),cam2_fx*fovd*pi/180 , cam1_fy*fovd*pi/180)); //(1140*1140)
 
-        // ROIImage1 = frame3(Rect(0,0,1140,1140));
-		// ROIImage2 = frame3(Rect(1140, 0, 1140, 1140));
+        ROIImage1 = frame3(Rect(0,0,cam1_fx*fovd*pi/180,cam1_fy*fovd*pi/180));
+		ROIImage2 = frame3(Rect(cam1_fx*fovd*pi/180, 0, cam2_fx*fovd*pi/180 , cam1_fy*fovd*pi/180));
 
-		// cvtColor(CutFrame1, gray_Image1,CV_RGB2GRAY);
-		// cvtColor(CutFrame2, gray_Image2, CV_RGB2GRAY);
-		// mask1 = gray_Image1;
-		// mask2 = gray_Image2;
-		// CutFrame1.copyTo(ROIImage1, mask1);
-		// CutFrame2.copyTo(ROIImage2, mask2);
+		cvtColor(CutFrame1, gray_Image1,CV_RGB2GRAY);
+		cvtColor(CutFrame2, gray_Image2, CV_RGB2GRAY);
+		mask1 = gray_Image1;
+		mask2 = gray_Image2;
+		CutFrame1.copyTo(ROIImage1, mask1);
+		CutFrame2.copyTo(ROIImage2, mask2);
 
-        // // resize frame3
-        // Mat res_frame3(1920, 3840, frame3.type());
-        // resize(frame3, res_frame3, res_frame3.size(), INTER_LINEAR);
+        // resize frame3
+        Mat res_frame3(1920, 3840, frame3.type());
+        resize(frame3, res_frame3, res_frame3.size(), INTER_LINEAR);
 
-        // //--------------------------------------------------------------------------
-        // // Read frames and process
-        // //--------------------------------------------------------------------------
-        // // Read input fisheye images
-        // in_img = res_frame3;
-        // in_img_L = in_img(Rect(0, 0, Worg / 2, Horg));        // left fisheye
-        // in_img_R = in_img(Rect(Worg / 2, 0, Worg / 2, Horg)); // right fisheye
-        // // Stitch
-        // //--------------------------------------------------------------------------
-    	// // Fisheye Unwarping
-   		// //--------------------------------------------------------------------------
-   		// Mat left_unwarped, right_unwarped;
-	    // Mat left_img_compensated(in_img_L.size(), in_img_L.type());
-   		// Mat right_img_compensated(in_img_R.size(), in_img_R.type());
-        // fish_lighFO_compen(left_img_compensated, in_img_L, scale_map);
-        // fish_lighFO_compen(right_img_compensated, in_img_R, scale_map);
-    	// fish_unwarp(map_x, map_y, left_img_compensated, left_unwarped);
-    	// fish_unwarp(map_x, map_y, right_img_compensated, right_unwarped);
-	    // //--------------------------------------------------------------------------
-		// // left_unwarped Image for Adaptive Alignment
-		// //--------------------------------------------------------------------------
-		// Mat temp1 = left_unwarped(Rect(0, 0, int(Wd / 2), Hd -2 ));
-		// Mat temp2 = left_unwarped(Rect(int(Wd / 2), 0, int(Wd / 2), Hd -2));
-		// Mat left_unwarped_arr; // re-arranged left unwarped
-		// cv::hconcat(temp2, temp1, left_unwarped_arr);
-		// // Mat leftImg_crop;
-		// // leftImg_crop = left_unwarped_arr(Rect(int(Wd / 2) - (W_in / 2), 0, W_in, Hd -2)); 
-		// // uint16_t crop = uint16_t(0.5 * Ws * (210.0 - 180.0) / 210.0); // half overlap region
-	    // //--------------------------------------------------------------------------
-	    // // right_unwarped Image for Adaptive Alignment
-	    // //--------------------------------------------------------------------------
-	    // Mat rightImg_crop;
-	    // rightImg_crop = right_unwarped(Rect(int(Wd / 2) - (W_in / 2), 0, W_in, Hd -2)); 
-	    // //--------------------------------------------------------------------------
-	    // // PARAMETERS (hard-coded) for dual-fisheye
-	    // //--------------------------------------------------------------------------
+        //--------------------------------------------------------------------------
+        // Read frames and process
+        //--------------------------------------------------------------------------
+        // Read input fisheye images
+        in_img = res_frame3;
+        in_img_L = in_img(Rect(0, 0, Worg / 2, Horg));        // left fisheye
+        in_img_R = in_img(Rect(Worg / 2, 0, Worg / 2, Horg)); // right fisheye
+        // Stitch
+        //--------------------------------------------------------------------------
+    	// Fisheye Unwarping
+   		//--------------------------------------------------------------------------
+   		Mat left_unwarped, right_unwarped;
+	    Mat left_img_compensated(in_img_L.size(), in_img_L.type());
+   		Mat right_img_compensated(in_img_R.size(), in_img_R.type());
+        fish_lighFO_compen(left_img_compensated, in_img_L, scale_map);
+        fish_lighFO_compen(right_img_compensated, in_img_R, scale_map);
+    	fish_unwarp(map_x, map_y, left_img_compensated, left_unwarped);
+    	fish_unwarp(map_x, map_y, right_img_compensated, right_unwarped);
+        //--------------------------------------------------------------------------
+    	// Fisheye blending directly
+   		//--------------------------------------------------------------------------
+        fish_blend_directly(left_unwarped,right_unwarped,pano,cam1_u0, cam1_fx, cam2_u0, cam2_fx);
+        
+        Mat resize_pano(800,1600, pano.type());
+        resize(pano, resize_pano, resize_pano.size(), 0, 0, INTER_LINEAR);
 
-	    // //--------------------------------------------------------------
-	    // // Blend Images
-	    // //--------------------------------------------------------------
-	    // fish_blend(left_unwarped_arr, rightImg_crop, pano, binary_mask, blend_post);
-
-        // Mat resize_pano(800,1600, pano.type());
-        // resize(pano, resize_pano, resize_pano.size(), 0, 0, INTER_LINEAR);
-
-        fish_angle_regulation(map1_angle_x, map1_angle_y, frame1, angle_tmp1);
-        fish_angle_regulation(map1_angle_x, map1_angle_y, frame2, angle_tmp2);
+        //output and write
+		outputvideo.write(resize_pano);
+        
+        // //angle transformation
+        // fish_angle_regulation(map1_angle_x, map1_angle_y, frame1, angle_tmp1);
+        // fish_angle_regulation(map1_angle_x, map1_angle_y, frame2, angle_tmp2);
 
         // //debug :
 		// imshow("【frame1】", frame1);
 		// imwrite("/home/neousys/duweixin/FisheyePro/fisheyestitcher_dwx/fisheye_test_program/frame1.jpg",frame1);
-        imshow("【frame1】", angle_tmp1);
-		imwrite("/home/neousys/duweixin/FisheyePro/fisheyestitcher_dwx/fisheye_test_program/angle_tmp1.jpg",angle_tmp1);
+        // imshow("【frame1】", angle_tmp1);
+		// imwrite("/home/neousys/duweixin/FisheyePro/fisheyestitcher_dwx/fisheye_test_program/angle_tmp1.jpg",angle_tmp1);
 		// imshow("【frame2】", frame2);
 		// imwrite("/home/neousys/duweixin/FisheyePro/fisheye_test_program/frame2.jpg",frame2);
 		// imshow("【CutFrame1】", CutFrame1);
@@ -841,17 +838,25 @@ int main( int argc, char** argv )
 		// imshow("【ROIImage1】", ROIImage1);
 		// imshow("【ROIImage2】", ROIImage2);
         // imshow("【frame3】", frame3);
-        // imwrite("/home/neousys/duweixin/FisheyePro/fisheye_test_program/frame3.jpg", frame3);
+        // imwrite("/home/neousys/duweixin/FisheyePro/fisheyestitcher_dwx/fisheye_test_program/frame3.jpg", frame3);
         // imshow("in_img_L",left_unwarped);
-        // imwrite("/home/neousys/duweixin/FisheyePro/fisheye_test_program/left_unwarped.jpg", left_unwarped);
+        // imwrite("/home/neousys/duweixin/FisheyePro/fisheyestitcher_dwx/fisheye_test_program/left_unwarped.jpg", left_unwarped);
+        // imshow("in_img_L",left_unwarped_arr);
+        // imwrite("/home/neousys/duweixin/FisheyePro/fisheyestitcher_dwx/fisheye_test_program/leftImg_crop.jpg", left_unwarped_arr);
         // imshow("in_img_R",right_unwarped);
-        // imwrite("/home/neousys/duweixin/FisheyePro/fisheye_test_program/right_unwarped.jpg", right_unwarped);
-        // imshow("【总窗口】", resize_pano);
+        // imwrite("/home/neousys/duweixin/FisheyePro/fisheyestitcher_dwx/fisheye_test_program/right_unwarped.jpg", right_unwarped);
+        imshow("【总窗口】", resize_pano);
+        // imwrite("/home/neousys/duweixin/FisheyePro/fisheyestitcher_dwx/fisheye_test_program/resize_pano.jpg", resize_pano);
 
-
-        // resize_pano.release();
-        waitKey(1);
+        resize_pano.release();
+        // if key get pressed, break
+		if (waitKey(1) == 27)
+		{
+			break;
+		}
+        // waitKey(1);
 
     }
+    outputvideo.release();
 	return 0;
 }
