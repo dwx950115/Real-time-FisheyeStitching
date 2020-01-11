@@ -69,18 +69,18 @@ pixel2point(int u, int v, float cam_fx, float cam_fy, float cam_u0, float cam_v0
 
 void
 point2pixel(MatrixXf& points_transd, MatrixXf& map_x_matrix, MatrixXf& map_y_matrix, 
-            float cam_fx, float cam_fy, float cam_u0, float cam_v0, int Hs, int Ws,float p1, float p2, float p3, float p4)
+            float cam_fx, float cam_fy, float cam_u0, float cam_v0, int Hs, int Ws)
 {
     int row = 1, col = 1;
     for (int i=0; i<Hs*Ws; i++)
     {
-        float point_theta_init = acos(points_transd(i,2)/(sqrt(pow(points_transd(i,0),2)+pow(points_transd(i,1),2)+pow(points_transd(i,2),2))));
-        float point_theta = point_theta_init*(1+p1*pow(point_theta_init,2)+p2*pow(point_theta_init,4)+p3*pow(point_theta_init,6)+p4*pow(point_theta_init,8));
+        float point_theta = acos(points_transd(i,2)/(sqrt(pow(points_transd(i,0),2)+pow(points_transd(i,1),2)+pow(points_transd(i,2),2))));
+        // float point_theta = point_theta_init*(1+p1*pow(point_theta_init,2)+p2*pow(point_theta_init,4)+p3*pow(point_theta_init,6)+p4*pow(point_theta_init,8));
         float px, py;
-        // if (point_theta > pi)
-        // {
-        //     point_theta = pi*2-point_theta;
-        // }
+        if (point_theta > pi)
+        {
+            point_theta = pi*2-point_theta;
+        }
         if (points_transd(i,0)==0 || points_transd(i,1) == 0)
         {
             px = points_transd(i,0)*cam_fx*point_theta/sqrt(pow(0.001, 2)+pow(0.001, 2))+cam_u0;
@@ -125,7 +125,6 @@ angle_transformation( cv::Mat &map_angle_x, cv::Mat &map_angle_y, float cam_yaw,
 
     euler_angle_rotation(cam_yaw, cam_pitch, cam_roll, R);
     R_inversed = R.transpose();
-    // R_inversed = R.inverse();
     for(int v=0; v<Hs; v++)
     {
         for(int u=0; u<Ws; u++)
@@ -134,14 +133,14 @@ angle_transformation( cv::Mat &map_angle_x, cv::Mat &map_angle_y, float cam_yaw,
         }
     }
     points_transd = (R_inversed * points.transpose()).transpose();
-    point2pixel(points_transd, map_x_matrix, map_y_matrix, cam_fx, cam_fy, cam_u0, cam_v0, Hs, Ws, p1,  p2,  p3,  p4);
+    point2pixel(points_transd, map_x_matrix, map_y_matrix, cam_fx, cam_fy, cam_u0, cam_v0, Hs, Ws);
 
     eigen2cv(map_x_matrix, map_angle_x);
     eigen2cv(map_y_matrix, map_angle_y);
 }
 
 void
-angle_transformation_unwarping_cam1(cv::Mat &map_angle_x, cv::Mat &map_angle_y, float cam_yaw, float cam_pitch, float cam_roll,
+angle_transformation_unwarping(cv::Mat &map_angle_x, cv::Mat &map_angle_y, float cam_yaw, float cam_pitch, float cam_roll,
                                 float cam_fx, float cam_fy, float cam_u0, float cam_v0, int Hs, int Ws, int Hd, int Wd,
                                 float p1, float p2, float p3, float p4)
 {
@@ -154,32 +153,7 @@ angle_transformation_unwarping_cam1(cv::Mat &map_angle_x, cv::Mat &map_angle_y, 
             lola2point(u, v, Wd, Hd, points);
         }
     }
-    point2pixel(points, map_x_matrix, map_y_matrix, cam_fx, cam_fy, cam_u0, cam_v0, Hd, Wd, p1,  p2,  p3,  p4);
-
-    eigen2cv(map_x_matrix, map_angle_x);    
-    eigen2cv(map_y_matrix, map_angle_y);
-}
-void
-angle_transformation_unwarping_cam2(cv::Mat &map_angle_x, cv::Mat &map_angle_y, float cam_yaw, float cam_pitch, float cam_roll,
-                                float cam_fx, float cam_fy, float cam_u0, float cam_v0, int Hs, int Ws, int Hd, int Wd,
-                                float p1, float p2, float p3, float p4,
-                                Matrix3f& R_l2c1, Matrix3f& R_l2c2)
-{
-    MatrixXf points(Hd*Wd, 3),points_transd(Hd*Wd,3);
-    MatrixXf map_x_matrix(Hd, Wd), map_y_matrix(Hd, Wd);
-    Matrix3f R_l2c2_inversed,R_cam12cam2,R_all;
-    for(int v=0; v<Hd; v++)
-    {
-        for(int u=0; u<Wd; u++)
-        {
-            lola2point(u, v, Wd, Hd, points);
-        }
-    }
-    R_l2c2_inversed = R_l2c2.inverse();
-    euler_angle_rotation(cam_yaw, cam_pitch, cam_roll, R_cam12cam2);
-    R_all = R_cam12cam2*(R_l2c1*R_l2c2_inversed);
-    points_transd = (R_all*(points.transpose())).transpose();
-    point2pixel(points_transd, map_x_matrix, map_y_matrix, cam_fx, cam_fy, cam_u0, cam_v0, Hd, Wd, p1,  p2,  p3,  p4);
+    point2pixel(points, map_x_matrix, map_y_matrix, cam_fx, cam_fy, cam_u0, cam_v0, Hd, Wd);
 
     eigen2cv(map_x_matrix, map_angle_x);    
     eigen2cv(map_y_matrix, map_angle_y);
@@ -212,10 +186,10 @@ fish_blend_right( cv::Mat &bg, cv::Mat &bg1, cv::Mat &bg2 )
     {
         for (int c = 0; c < w; c++)
         {
-            alpha1 = double(c) / double(w);
-            alpha2 = 1 - alpha1;
-            // alpha1 = 1- (cos(double(c)*pi / double(w))+1)/2;
+            // alpha1 = double(c) / double(w);
             // alpha2 = 1 - alpha1;
+            alpha1 = 1- (cos(double(c)*pi / double(w))+1)/2;
+            alpha2 = 1 - alpha1;
             bgr_bg[0].at<float>(r, c) = alpha1*bgr_bg1[0].at<float>(r, c) + alpha2*bgr_bg2[0].at<float>(r, c);
             bgr_bg[1].at<float>(r, c) = alpha1*bgr_bg1[1].at<float>(r, c) + alpha2*bgr_bg2[1].at<float>(r, c);
             bgr_bg[2].at<float>(r, c) = alpha1*bgr_bg1[2].at<float>(r, c) + alpha2*bgr_bg2[2].at<float>(r, c);
@@ -255,10 +229,10 @@ fish_blend_left( cv::Mat &bg, cv::Mat &bg1, cv::Mat &bg2 )
     {
         for (int c = 0; c < w; c++)
         {
-            alpha1 = (double(w) - c + 1) / double(w);
-            alpha2 = 1 - alpha1;
-            // alpha1 = 1 - (cos((double(w) - c + 1)*pi / double(w))+1)/2;
+            // alpha1 = (double(w) - c + 1) / double(w);
             // alpha2 = 1 - alpha1;
+            alpha1 = 1 - (cos((double(w) - c + 1)*pi / double(w))+1)/2;
+            alpha2 = 1 - alpha1;
             bgr_bg[0].at<float>(r, c) = alpha1*bgr_bg1[0].at<float>(r, c) + alpha2*bgr_bg2[0].at<float>(r, c);
             bgr_bg[1].at<float>(r, c) = alpha1*bgr_bg1[1].at<float>(r, c) + alpha2*bgr_bg2[1].at<float>(r, c);
             bgr_bg[2].at<float>(r, c) = alpha1*bgr_bg1[2].at<float>(r, c) + alpha2*bgr_bg2[2].at<float>(r, c);
@@ -393,23 +367,16 @@ int main( int argc, char** argv )
     float cam1_yaw = 0;
     float cam1_pitch = pi*0/180;
     float cam1_roll = 0;
-    float cam2_yaw = 180.5*pi/180;
-    float cam2_pitch = -1.5*pi/180;
-    float cam2_roll = 180.7*pi/180;
+    float cam2_yaw = 0;
+    float cam2_pitch = pi*0/180;
+    float cam2_roll = 0;
     /***************************************************************************************************
     * camera parameter 
     ***************************************************************************************************/
-    float cam_mat1[3][3] = {{304.7801534402248,0.0,867.8445554617841},{0.0,305.6912573078485,625.6738350608116},{0.0,0.0,1.0}};
-    float cam_dist1[4] = {0.04850296832337195,0.01454854784954367,-0.017225151508037845,0.00267053820730027};
-    float cam_mat2[3][3] = {{306.5841497398096,0.0,820.9386959006093},{0.0,307.59874179252114,615.0509401922786},{0.0,0.0,1.0}};
-    float cam_dist2[4] = {0.04911420665606545,0.00941556838457144,-0.011917781123122657,0.001226010291746531}; 
-    Matrix3f R_l2c1(3,3),R_l2c2(3,3); 
-    R_l2c1 << -0.029552813382328458,-0.9994453180676002,-0.015352114315066057, 
-                0.014659576245366068,0.014923800969938616,-0.999781164549981,
-                0.9994557159001571,-0.029771401669441977,0.014210404538266608;
-    R_l2c2 << 0.015659396674327697,0.9996014928623236,0.02348699136139848,
-                0.021552533856169342,0.023146966031160843,-0.9994997279879225,
-                -0.9996450728034301,0.016157766892941516,-0.021181477494703393;
+    float cam_mat1[3][3] = {{306.2179554207244, 0.0, 827.6396074947415}, {0.0, 306.4032729038873, 612.7686375589241}, {0.0, 0.0, 1.0}};
+    float cam_dist1[4] = {0.061469387879628086, -0.018668965639305285, 0.03781464752574166, -0.02677018297407956};
+    float cam_mat2[3][3] = {{305.8103327739443, 0.0, 868.4087733419921}, {0.0, 306.2007353016409, 628.2346880123545}, {0.0, 0.0, 1.0}};
+    float cam_dist2[4] = {0.05474630002513208, -0.003933657882507959, 0.03314157850495621, -0.03770454084099611}; 
     // cam_1
     float cam1_fx = cam_mat1[0][0];
     float cam1_fy = cam_mat1[1][1];
@@ -449,12 +416,12 @@ int main( int argc, char** argv )
     //--------------------------------------------------------------------------
     // Unwarp map1_angle_x, map1_angle_y
     //--------------------------------------------------------------------------
-    angle_transformation_unwarping_cam1(map1_angle_x, map1_angle_y, cam1_yaw, cam1_pitch, cam1_roll,
+    angle_transformation_unwarping(map1_angle_x, map1_angle_y, cam1_yaw, cam1_pitch, cam1_roll,
                                  cam1_fx,  cam1_fy,  cam1_u0,  cam1_v0,  Hs,  Ws, Hd, Wd,
                                  p1_1,  p1_2,  p1_3,  p1_4);
-    angle_transformation_unwarping_cam2(map2_angle_x, map2_angle_y, cam2_yaw, cam2_pitch, cam2_roll,
-                                 cam2_fx, cam2_fy, cam2_u0, cam2_v0, Hs, Ws, Hd, Wd,
-                                 p2_1, p2_2, p2_3, p2_4, R_l2c1, R_l2c2);
+    angle_transformation_unwarping(map2_angle_x, map2_angle_y, cam2_yaw, cam2_pitch, cam2_roll,
+                                 cam2_fx,  cam2_fy,  cam2_u0,  cam2_v0,  Hs,  Ws, Hd, Wd,
+                                 p2_1,  p2_2,  p2_3,  p2_4);
 
 
     /***************************************************************************************************
